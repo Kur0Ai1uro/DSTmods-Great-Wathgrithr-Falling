@@ -1,6 +1,6 @@
 name = "薇格弗德：大荒星陨"
 description = "薇格弗德持奔雷矛时，按键朝鼠标落点投出奔雷矛，再俯冲到落点。给饥荒联机用：房主启用后，房间里的人都会加载。技能由服务器结算。"
-author = "本地"
+author = "Kur0Ai1uro"
 version = "1.2"
 forumthread = ""
 api_version = 10

@@ -3,6 +3,7 @@ local State = GLOBAL.State
 local EventHandler = GLOBAL.EventHandler
 
 local STARFALL_STATE = {
+    starfall_channel = true,
     starfall_rise = true,
     starfall_hang = true,
     starfall_dive = true,
@@ -87,6 +88,48 @@ local function OnExit(inst, nextstate)
 end
 
 AddStategraphState("wilson", State({
+    name = "starfall_channel",
+    tags = TAGS,
+
+    onenter = function(inst)
+        local cast = inst._starfall
+        if cast == nil then
+            AbortToIdle(inst)
+            return
+        end
+        StopMoving(inst)
+        Common.SpawnZones(inst)
+        Common.Say(inst, "success")
+        CameraPull(inst)
+        Common.ShowScope(inst)
+        inst:ForceFacePoint(cast.dest:Get())
+        inst.AnimState:PlayAnimation("channel_pre")
+        inst.AnimState:PushAnimation("channel_loop", true)
+        inst.sg:SetTimeout(Common.Tuning().channel_time or 1.8)
+    end,
+
+    onupdate = function(inst)
+        local cast = inst._starfall
+        if cast == nil then
+            AbortToIdle(inst)
+            return
+        end
+        StopMoving(inst)
+        inst:ForceFacePoint(cast.dest:Get())
+    end,
+
+    ontimeout = function(inst)
+        if inst._starfall == nil then
+            AbortToIdle(inst)
+            return
+        end
+        inst.sg:GoToState("starfall_rise")
+    end,
+
+    onexit = OnExit,
+}))
+
+AddStategraphState("wilson", State({
     name = "starfall_rise",
     tags = TAGS,
 
@@ -99,7 +142,6 @@ AddStategraphState("wilson", State({
         StopMoving(inst)
         Common.StartFlight(inst)
         Common.SpawnZones(inst)
-        Common.Say(inst, "success")
         CameraPull(inst)
         Common.ShowScope(inst)
         if inst.SoundEmitter ~= nil then
@@ -208,7 +250,17 @@ AddStategraphState("wilson", State({
         inst.sg.statemem.land_z = lz
         inst.sg.statemem.t = 0
         inst.sg.statemem.sliding = false
+        local speed = tuning.travel_speed or 22
+        local air_dx = lx - origin.x
+        local air_dz = lz - origin.z
+        local air_dist = math.sqrt(air_dx * air_dx + air_dz * air_dz)
+        local slide_dx = cast.dest.x - lx
+        local slide_dz = cast.dest.z - lz
+        local slide_dist = math.sqrt(slide_dx * slide_dx + slide_dz * slide_dz)
+        inst.sg.statemem.air_time = math.max(0.35, air_dist / speed)
+        inst.sg.statemem.slide_time = math.max(0.2, slide_dist / speed)
         Common.HoldHeight(inst, origin.x, origin.z, tuning.peak)
+        Common.SpawnWarning(inst)
         inst:ForceFacePoint(cast.dest:Get())
         inst.AnimState:PlayAnimation("spearjab_pre")
         inst.AnimState:PushAnimation("spearjab", false)
@@ -225,11 +277,11 @@ AddStategraphState("wilson", State({
         local dest = cast.dest
         inst.sg.statemem.t = inst.sg.statemem.t + dt
         if not inst.sg.statemem.sliding then
-            local k = math.min(1, inst.sg.statemem.t / tuning.dive_time)
-            local ease = k * k
-            local x = inst.sg.statemem.x + (inst.sg.statemem.land_x - inst.sg.statemem.x) * ease
-            local z = inst.sg.statemem.z + (inst.sg.statemem.land_z - inst.sg.statemem.z) * ease
-            local y = inst.sg.statemem.y * (1 - ease)
+            local air_time = inst.sg.statemem.air_time or tuning.dive_time
+            local k = math.min(1, inst.sg.statemem.t / air_time)
+            local x = inst.sg.statemem.x + (inst.sg.statemem.land_x - inst.sg.statemem.x) * k
+            local z = inst.sg.statemem.z + (inst.sg.statemem.land_z - inst.sg.statemem.z) * k
+            local y = inst.sg.statemem.y * (1 - k)
             Common.HoldHeight(inst, x, z, y)
             inst:ForceFacePoint(dest.x, 0, dest.z)
             if k >= 1 then
@@ -242,11 +294,10 @@ AddStategraphState("wilson", State({
             end
             return
         end
-        local slide_time = tuning.slide_time or 0.4
+        local slide_time = inst.sg.statemem.slide_time or tuning.slide_time or 0.4
         local k = math.min(1, inst.sg.statemem.t / slide_time)
-        local ease = k * k
-        local x = inst.sg.statemem.x + (dest.x - inst.sg.statemem.x) * ease
-        local z = inst.sg.statemem.z + (dest.z - inst.sg.statemem.z) * ease
+        local x = inst.sg.statemem.x + (dest.x - inst.sg.statemem.x) * k
+        local z = inst.sg.statemem.z + (dest.z - inst.sg.statemem.z) * k
         Common.HoldHeight(inst, x, z, 0)
         if (dest.x - x) * (dest.x - x) + (dest.z - z) * (dest.z - z) > 0.04 then
             inst:ForceFacePoint(dest.x, 0, dest.z)
@@ -275,6 +326,7 @@ AddStategraphState("wilson", State({
         end
         local dest = cast.dest
         inst.Physics:Teleport(dest.x, 0, dest.z)
+        Common.BreakStuckSpear(inst)
         Common.DoDiveDamage(inst)
         Common.EndFlight(inst)
         CameraShake(inst)
@@ -331,6 +383,14 @@ local function AddClientState(name, onenter)
         onexit = ClientOnExit,
     }))
 end
+
+AddClientState("starfall_channel", function(inst)
+    StopMoving(inst)
+    CameraPull(inst)
+    Common.ShowScope(inst)
+    inst.AnimState:PlayAnimation("channel_pre")
+    inst.AnimState:PushAnimation("channel_loop", true)
+end)
 
 AddClientState("starfall_rise", function(inst)
     StopMoving(inst)

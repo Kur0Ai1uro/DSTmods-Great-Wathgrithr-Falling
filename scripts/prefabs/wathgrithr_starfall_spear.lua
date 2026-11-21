@@ -52,8 +52,6 @@ local function SetupAppearance(inst, charged)
     end
 end
 
-local STICK_TIME = 1.6
-
 local function StickInGround(inst, x, z)
     local arc = inst._arc
     local dx = 1
@@ -69,27 +67,31 @@ local function StickInGround(inst, x, z)
     dx = dx / dist
     dz = dz / dist
 
-    local back = 0.55
     inst.Physics:Stop()
     inst.Physics:SetMotorVel(0, 0, 0)
-    inst.Physics:Teleport(x - dx * back, 0.35, z - dz * back)
-    inst:ForceFacePoint(x, 0, z)
-    inst.AnimState:SetOrientation(ANIM_ORIENTATION.OnGround)
-    inst.AnimState:SetScale(1.8, 0.7)
-    inst.Transform:SetScale(1.15, 1.15, 1.15)
+    inst.Physics:Teleport(x, 0, z)
+    inst:ForceFacePoint(x + dx, 0, z + dz)
+    inst.AnimState:SetOrientation(ANIM_ORIENTATION.BillBoard)
+    inst.AnimState:SetScale(1, 1)
+    inst.Transform:SetScale(1.45, 1.45, 1.45)
+    inst.AnimState:SetSortOrder(3)
+    inst.AnimState:SetMultColour(1, 1, 1, 1)
+end
 
+local function BreakSpear(inst)
+    if not inst:IsValid() or inst._breaking then
+        return
+    end
+    inst._breaking = true
     local started = GetTime()
-    inst:DoPeriodicTask(0.1, function(spear)
+    inst:DoPeriodicTask(0.05, function(spear)
         if not spear:IsValid() then
             return
         end
-        local k = (GetTime() - started) / STICK_TIME
-        if k > 0.65 then
-            local alpha = 1 - (k - 0.65) / 0.35
-            spear.AnimState:SetMultColour(1, 1, 1, math.max(0, alpha))
-        end
+        local k = (GetTime() - started) / 0.35
+        spear.AnimState:SetMultColour(1, 1, 1, math.max(0, 1 - k))
     end)
-    inst:DoTaskInTime(STICK_TIME, inst.Remove)
+    inst:DoTaskInTime(0.35, inst.Remove)
 end
 
 local function BeginArc(inst, x0, y0, z0, x1, z1, duration, attacker)
@@ -154,6 +156,7 @@ local function fn()
     inst.SetupAppearance = SetupAppearance
     inst.BeginArc = BeginArc
     inst.StickInGround = StickInGround
+    inst.BreakSpear = BreakSpear
 
     inst:AddComponent("complexprojectile")
 

@@ -9,6 +9,7 @@ local LINES = {
     bad_land = "那里无法降落！",
     busy = "此刻无法飞升！",
     success = "星陨！",
+    ready = "星陨已就绪！",
 }
 
 local AREA_CANT = { "INLIMBO", "playerghost", "wall", "companion", "FX", "NOCLICK" }
@@ -105,6 +106,9 @@ function Common.EndFlight(inst)
     end
     if cast ~= nil and cast.spear ~= nil and cast.spear:IsValid() then
         cast.spear:Remove()
+    end
+    if cast ~= nil and cast.stuck_spear ~= nil and cast.stuck_spear:IsValid() and not cast.stuck_spear._breaking then
+        cast.stuck_spear:Remove()
     end
     if cast ~= nil and cast.zones ~= nil then
         for i = 1, #cast.zones do
@@ -420,8 +424,10 @@ function Common.SlideStart(cast, slide_length)
         dirz = dz / dist
     end
     local back = cast.scope ~= nil and cast.scope.back or slide_length
-    local slide = math.min(back, math.max(dist, 0.5))
-    return cast.dest.x - dirx * slide, cast.dest.z - dirz * slide
+    if back < 0.5 then
+        back = 0.5
+    end
+    return cast.dest.x - dirx * back, cast.dest.z - dirz * back
 end
 
 function Common.DoDiveDamage(inst)
@@ -446,7 +452,6 @@ function Common.DoDiveDamage(inst)
     local cz = dz - fz * shift
     local half_l = scope.world_w * 0.5
     local half_w = scope.world_h * 0.5
-    local land_radius = tuning.land_radius
     local weapon = cast.weapon
     if weapon ~= nil and not weapon:IsValid() then
         weapon = nil
@@ -454,9 +459,8 @@ function Common.DoDiveDamage(inst)
 
     SpawnImpact(inst, dx, dz, "slam")
 
-    local reach = math.sqrt(half_l * half_l + half_w * half_w) + land_radius
+    local reach = math.sqrt(half_l * half_l + half_w * half_w)
     local ents = TheSim:FindEntities(cx, 0, cz, math.max(reach, 1), { "_combat" }, AREA_CANT)
-    local land_sq = land_radius * land_radius
     for i = 1, #ents do
         local ent = ents[i]
         local ex, _, ez = ent.Transform:GetWorldPosition()
@@ -464,13 +468,32 @@ function Common.DoDiveDamage(inst)
         local lat = (ex - cx) * rx + (ez - cz) * rz
         if math.abs(along) <= half_l and math.abs(lat) <= half_w then
             local falloff = 1 - 0.5 * (math.abs(lat) / math.max(0.001, half_w))
-            local mult = falloff * tuning.path_mult
-            local land_dx = ex - dx
-            local land_dz = ez - dz
-            if land_dx * land_dx + land_dz * land_dz <= land_sq then
-                mult = mult + tuning.land_mult
-            end
-            HitTarget(inst, ent, cast, weapon, mult)
+            HitTarget(inst, ent, cast, weapon, falloff * tuning.path_mult)
+        end
+    end
+end
+
+local function DoSpearImpactDamage(owner, x, z)
+    local cast = owner._starfall
+    local tuning = Common.Tuning()
+    if cast == nil or tuning == nil or owner.components.combat == nil then
+        return
+    end
+    local scope = cast.scope or Common.ScopeLayout()
+    local radius = scope.world_h * 0.46
+    local weapon = cast.weapon
+    if weapon ~= nil and not weapon:IsValid() then
+        weapon = nil
+    end
+    local ents = TheSim:FindEntities(x, 0, z, radius, { "_combat" }, AREA_CANT)
+    local radius_sq = radius * radius
+    for i = 1, #ents do
+        local ent = ents[i]
+        local ex, _, ez = ent.Transform:GetWorldPosition()
+        local ddx = ex - x
+        local ddz = ez - z
+        if ddx * ddx + ddz * ddz <= radius_sq then
+            HitTarget(owner, ent, cast, weapon, tuning.land_mult)
         end
     end
 end
@@ -480,6 +503,10 @@ function Common.OnSpearLand(proj, attacker)
         return
     end
     local x, _, z = proj.Transform:GetWorldPosition()
+    if proj._arc ~= nil then
+        x = proj._arc.x1
+        z = proj._arc.z1
+    end
     local owner = attacker
     if (owner == nil or not owner:IsValid()) and proj._arc ~= nil then
         owner = proj._arc.attacker
@@ -493,9 +520,10 @@ function Common.OnSpearLand(proj, attacker)
         if owner._starfall.spear == proj then
             owner._starfall.spear = nil
         end
+        owner._starfall.stuck_spear = proj
         if not owner._starfall.phase1 then
             owner._starfall.phase1 = true
-            owner._starfall.dest = Vector3(x, 0, z)
+            DoSpearImpactDamage(owner, x, z)
             SpawnImpact(owner, x, z, "stick")
             owner:PushEvent("starfall_spearhit")
         end
@@ -556,15 +584,37 @@ function Common.SpawnZones(inst)
         mark.Transform:SetRotation(rotation)
         cast.zones[#cast.zones + 1] = mark
     end
-    local warning = SpawnPrefab("meteorwarning")
-    if warning ~= nil then
-        warning.Transform:SetPosition(dx, 0, dz)
-        warning.Transform:SetScale(2.2, 2.2, 2.2)
-        cast.warning = warning
-    end
     if inst.SoundEmitter ~= nil then
         inst.SoundEmitter:PlaySound("dontstarve/common/staff_blink")
     end
+end
+
+function Common.BreakStuckSpear(inst)
+    local cast = inst._starfall
+    if cast == nil or cast.stuck_spear == nil then
+        return
+    end
+    local spear = cast.stuck_spear
+    cast.stuck_spear = nil
+    if spear:IsValid() and spear.BreakSpear ~= nil then
+        spear:BreakSpear()
+    elseif spear:IsValid() then
+        spear:Remove()
+    end
+end
+
+function Common.SpawnWarning(inst)
+    local cast = inst._starfall
+    if cast == nil or cast.dest == nil or (cast.warning ~= nil and cast.warning:IsValid()) then
+        return
+    end
+    local warning = SpawnPrefab("meteorwarning")
+    if warning == nil then
+        return
+    end
+    warning.Transform:SetPosition(cast.dest.x, 0, cast.dest.z)
+    warning.Transform:SetScale(1.6, 1.6, 1.6)
+    cast.warning = warning
 end
 
 function Common.EnsurePhase1(inst)
@@ -647,7 +697,7 @@ function Common.TryStarfall(inst, x, z)
     end
 
     inst:ForceFacePoint(tx, 0, tz)
-    inst.sg:GoToState("starfall_rise")
+    inst.sg:GoToState("starfall_channel")
 end
 
 local function ScopeMark()
@@ -674,42 +724,38 @@ local function UpdateScope(img)
     end
     local scope = Common.ScopeLayout()
     local mx, _, mz = mark.Transform:GetWorldPosition()
-    local cam = TheCamera
-    local heading = cam ~= nil and cam.heading or 0
-    local right = (heading + 90) * DEGREES
+    local rot = mark.Transform:GetRotation() * DEGREES
+    local fx = math.cos(rot)
+    local fz = -math.sin(rot)
+    local rx = math.sin(rot)
+    local rz = math.cos(rot)
     local sx, sy = TheSim:GetScreenPos(mx, 0, mz)
-    local sx2, sy2 = TheSim:GetScreenPos(mx + math.cos(right), 0, mz + math.sin(right))
-    if sx == nil or sy == nil or sx2 == nil or sy2 == nil then
+    local sxf, syf = TheSim:GetScreenPos(mx + fx, 0, mz + fz)
+    local sxr, syr = TheSim:GetScreenPos(mx + rx, 0, mz + rz)
+    if sx == nil or sy == nil or sxf == nil or syf == nil or sxr == nil or syr == nil then
         img:Hide()
         return
     end
-    local ppu = math.sqrt((sx2 - sx) * (sx2 - sx) + (sy2 - sy) * (sy2 - sy))
-    if ppu ~= ppu or ppu < 0.01 then
+    local fdx, fdy = sxf - sx, syf - sy
+    local rdx, rdy = sxr - sx, syr - sy
+    local ppu_f = math.sqrt(fdx * fdx + fdy * fdy)
+    local ppu_r = math.sqrt(rdx * rdx + rdy * rdy)
+    if ppu_f ~= ppu_f or ppu_r ~= ppu_r or ppu_r < 0.01 then
         img:Hide()
         return
     end
-    local pix_w = ppu * scope.world_w
-    local pix_h = ppu * scope.world_h
+    if ppu_f < 0.01 then
+        ppu_f = ppu_r
+    end
+    local pix_w = ppu_f * scope.world_w
+    local pix_h = ppu_r * scope.world_h
     img:SetScale(1, 1)
     img:SetSize(pix_w, pix_h)
 
-    local px, _, pz = ThePlayer.Transform:GetWorldPosition()
-    local psx, psy = TheSim:GetScreenPos(px, 0, pz)
-    local rot = mark.Transform:GetRotation() * DEGREES
-    local fx, fy = TheSim:GetScreenPos(mx + math.cos(rot), 0, mz - math.sin(rot))
-    local aim_x = (fx or sx) - sx
-    local aim_y = (fy or sy) - sy
-    if psx ~= nil and psy ~= nil then
-        local dx = sx - psx
-        local dy = sy - psy
-        if dx * dx + dy * dy > 16 then
-            aim_x, aim_y = dx, dy
-        end
-    end
-    local len = math.sqrt(aim_x * aim_x + aim_y * aim_y)
+    local len = math.sqrt(fdx * fdx + fdy * fdy)
     local ux, uy = 1, 0
     if len > 0.001 then
-        ux, uy = aim_x / len, aim_y / len
+        ux, uy = fdx / len, fdy / len
     end
     local ox = (SCOPE_CIRCLE_X / SCOPE_W - 0.5) * pix_w
     img:SetRotation(math.deg(math.atan2(-uy, ux)))
@@ -742,7 +788,7 @@ function Common.ShowScope(inst)
     local img = root:AddChild(Image("images/scope.xml", "scope.tex"))
     img:Hide()
     img:SetClickable(false)
-    img:SetTint(1, 1, 1, 0.45)
+    img:SetTint(0.72, 0.88, 0.95, 0.3)
     img:SetHRegPoint(ANCHOR_MIDDLE)
     img:SetVRegPoint(ANCHOR_MIDDLE)
     img.OnUpdate = UpdateScope
